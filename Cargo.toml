@@ -33,7 +33,7 @@ clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 clap_mangen   = "0.2"
 crossterm     = { version = "0.28", features = ["event-stream"] }
-nix           = { version = "0.29", features = ["signal", "process"] }
+nix           = { version = "0.31", features = ["signal", "process"] }
 owo-colors    = "4"
 procfs        = "0.17"
 ratatui       = "0.28"

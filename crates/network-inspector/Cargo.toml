@@ -12,5 +12,5 @@ categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
 anyhow = { workspace = true }
-dns-lookup = "1"
+dns-lookup = "3"
 serde = { workspace = true }

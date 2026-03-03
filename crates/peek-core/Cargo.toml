@@ -14,7 +14,7 @@ categories = ["command-line-utilities", "os::linux-apis"]
 anyhow = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
-toml = "0.8"
+toml = "1.0"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sysinfo = { workspace = true }

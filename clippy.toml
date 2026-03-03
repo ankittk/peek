@@ -1,0 +1,11 @@
+# Configure Clippy lints (cargo clippy).
+# See: https://doc.rust-lang.org/clippy/configuration.html
+
+# Minimum Supported Rust Version (optional; uncomment and set for CI)
+# msrv = "1.74"
+
+# Cognitive complexity threshold (default 25). Functions above this may get linted if using cognitive-complexity.
+cognitive-complexity-threshold = 30
+
+# Allow single-character names in some cases (e.g. loop indices) to reduce noise.
+single-char-binding-names-threshold = 4

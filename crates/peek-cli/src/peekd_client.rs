@@ -20,7 +20,6 @@ pub struct Response {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct HistorySample {
     pub ts: String,
     pub rss_kb: u64,
@@ -43,9 +42,21 @@ fn send_request(action: &str, pid: Option<i32>) -> Result<Response> {
     send_request_value(serde_json::to_value(req)?)
 }
 
+/// Effective peekd socket path: env PEEK_PEEKD_SOCKET > config file > default.
+pub fn effective_socket_path() -> String {
+    std::env::var("PEEK_PEEKD_SOCKET")
+        .ok()
+        .or_else(|| {
+            peek_core::config::load_config()
+                .and_then(|c| c.peekd.socket_path)
+        })
+        .unwrap_or_else(|| SOCKET_PATH.to_string())
+}
+
 fn send_request_value(req: serde_json::Value) -> Result<Response> {
-    let stream = UnixStream::connect(SOCKET_PATH)
-        .with_context(|| format!("cannot connect to peekd at {SOCKET_PATH}"))?;
+    let socket_path = effective_socket_path();
+    let stream = UnixStream::connect(&socket_path)
+        .with_context(|| format!("cannot connect to peekd at {}", socket_path))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
 
     let mut json = serde_json::to_string(&req)?;

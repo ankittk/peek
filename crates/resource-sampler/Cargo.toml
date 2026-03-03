@@ -2,6 +2,13 @@
 name = "resource-sampler"
 version = "0.1.0"
 edition = "2021"
+description = "Resource sampling and metrics collection library for the Peek process intelligence tool"
+license = "MIT"
+repository = "https://github.com/ankittk/peek"
+homepage = "https://github.com/ankittk/peek"
+documentation = "https://github.com/ankittk/peek"
+keywords = ["process", "linux", "monitoring", "metrics"]
+categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
 anyhow = { workspace = true }

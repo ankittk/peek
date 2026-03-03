@@ -36,11 +36,28 @@ fn read_net_dev_from_path(path: &str) -> Option<(u64, u64)> {
 }
 
 /// Sample RX/TX bytes per second for the process's network namespace.
-/// Blocks ~1 second. Returns (rx_bytes_per_sec, tx_bytes_per_sec).
+///
+/// The sampling window is controlled by the `PEEK_NET_SAMPLE_MS` environment variable:
+/// - If unset, a default of 1000ms (1s) is used.
+/// - If set to `0`, rate sampling is skipped and `None` is returned.
+/// - Otherwise, the value is interpreted as a window in milliseconds.
+///
+/// Returns (rx_bytes_per_sec, tx_bytes_per_sec).
 #[cfg(target_os = "linux")]
 pub fn sample_network_rate(pid: i32) -> Option<(u64, u64)> {
+    let window_ms = std::env::var("PEEK_NET_SAMPLE_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1000);
+
+    if window_ms == 0 {
+        return None;
+    }
+
+    let window = std::time::Duration::from_millis(window_ms);
+
     let (r1, t1) = read_net_dev_for_pid(pid)?;
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    std::thread::sleep(window);
     let (r2, t2) = read_net_dev_for_pid(pid)?;
     Some((r2.saturating_sub(r1), t2.saturating_sub(t1)))
 }

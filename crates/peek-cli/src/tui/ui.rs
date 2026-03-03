@@ -32,6 +32,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_tabs(f, app, chunks[1]);
     draw_content(f, app, chunks[2]);
     draw_footer(f, app, chunks[3]);
+
+    // Optional help overlay drawn on top of the main UI
+    if app.show_help {
+        draw_help_overlay(f, app, area);
+    }
 }
 
 // ─── Header ───────────────────────────────────────────────────────────────────
@@ -155,7 +160,10 @@ fn draw_content(f: &mut Frame, app: &App, area: Rect) {
 // ─── Overview tab ─────────────────────────────────────────────────────────────
 
 pub(crate) fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
-    let info = app.info.as_ref().unwrap();
+    let info = match app.info.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -168,7 +176,7 @@ pub(crate) fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    // CPU sparkline
+    // CPU sparkline (data precomputed in App::refresh)
     let cpu_data = app.cpu_sparkline();
     let cpu_pct = info.cpu_percent.unwrap_or(0.0);
     let cpu_sparkline = Sparkline::default()
@@ -181,7 +189,7 @@ pub(crate) fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
                 ))
                 .borders(Borders::ALL),
         )
-        .data(&cpu_data)
+        .data(cpu_data)
         .max(1000)
         .style(Style::default().fg(cpu_color(cpu_pct)));
     f.render_widget(cpu_sparkline, chunks[0]);
@@ -215,10 +223,10 @@ pub(crate) fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
             info.vm_size_kb / 1024
         ),
     };
-    let rss_max = rss_data.iter().max().copied().unwrap_or(1).max(1);
+        let rss_max = rss_data.iter().copied().max().unwrap_or(1).max(1);
     let rss_sparkline = Sparkline::default()
         .block(Block::default().title(mem_title).borders(Borders::ALL))
-        .data(&rss_data)
+        .data(rss_data)
         .max(rss_max)
         .style(Style::default().fg(Color::Cyan));
     f.render_widget(rss_sparkline, chunks[1]);
@@ -226,7 +234,7 @@ pub(crate) fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     // FD sparkline (with leak warning coloring)
     let fd_data = app.fd_sparkline();
     let fd_cur = info.fd_count.unwrap_or(0);
-    let fd_max = fd_data.iter().max().copied().unwrap_or(1).max(1);
+    let fd_max = fd_data.iter().copied().max().unwrap_or(1).max(1);
     let fd_color = match app.fd_leak {
         FdLeakStatus::Warning { .. } => Color::Red,
         FdLeakStatus::Ok => Color::Gray,
@@ -244,7 +252,7 @@ pub(crate) fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     };
     let fd_sparkline = Sparkline::default()
         .block(Block::default().title(fd_title).borders(Borders::ALL))
-        .data(&fd_data)
+        .data(fd_data)
         .max(fd_max)
         .style(Style::default().fg(fd_color));
     f.render_widget(fd_sparkline, chunks[2]);
@@ -314,7 +322,10 @@ pub(crate) fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
 // ─── Kernel tab ───────────────────────────────────────────────────────────────
 
 pub(crate) fn draw_kernel(f: &mut Frame, app: &App, area: Rect) {
-    let info = app.info.as_ref().unwrap();
+    let info = match app.info.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
     let k = match &info.kernel {
         Some(k) => k,
         None => {
@@ -399,7 +410,10 @@ fn row2_colored<'a>(key: &'a str, value: &'a str, color: Color) -> Row<'a> {
 // ─── Network tab ──────────────────────────────────────────────────────────────
 
 pub(crate) fn draw_network(f: &mut Frame, app: &App, area: Rect) {
-    let info = app.info.as_ref().unwrap();
+    let info = match app.info.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
     let net = match &info.network {
         Some(n) => n,
         None => {
@@ -484,7 +498,7 @@ pub(crate) fn draw_network(f: &mut Frame, app: &App, area: Rect) {
     let conn_rows: Vec<Row> = net
         .connections
         .iter()
-        .take(50)
+        .take(max_connections())
         .map(|c| {
             let state_color = match c.state.as_str() {
                 "ESTABLISHED" => Color::Green,
@@ -528,7 +542,10 @@ pub(crate) fn draw_network(f: &mut Frame, app: &App, area: Rect) {
 // ─── Files tab ────────────────────────────────────────────────────────────────
 
 pub(crate) fn draw_files(f: &mut Frame, app: &App, area: Rect) {
-    let info = app.info.as_ref().unwrap();
+    let info = match app.info.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
     let files = match &info.open_files {
         Some(f) => f,
         None => {
@@ -541,7 +558,7 @@ pub(crate) fn draw_files(f: &mut Frame, app: &App, area: Rect) {
 
     let rows: Vec<Row> = files
         .iter()
-        .take(200)
+        .take(max_open_files())
         .map(|f| {
             let type_color = match f.fd_type.as_str() {
                 "socket" => Color::Cyan,
@@ -584,7 +601,10 @@ pub(crate) fn draw_files(f: &mut Frame, app: &App, area: Rect) {
 // ─── Env tab ─────────────────────────────────────────────────────────────────
 
 pub(crate) fn draw_env(f: &mut Frame, app: &App, area: Rect) {
-    let info = app.info.as_ref().unwrap();
+    let info = match app.info.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
     let env_vars = match &info.env_vars {
         Some(e) => e,
         None => {
@@ -643,7 +663,10 @@ pub(crate) fn draw_env(f: &mut Frame, app: &App, area: Rect) {
 // ─── GPU tab ──────────────────────────────────────────────────────────────────
 
 pub(crate) fn draw_gpu(f: &mut Frame, app: &App, area: Rect) {
-    let info = app.info.as_ref().unwrap();
+    let info = match app.info.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
     let gpus = match &info.gpu {
         Some(g) if !g.is_empty() => g,
         _ => {
@@ -726,7 +749,10 @@ pub(crate) fn draw_gpu(f: &mut Frame, app: &App, area: Rect) {
 // ─── Tree tab ─────────────────────────────────────────────────────────────────
 
 pub(crate) fn draw_tree(f: &mut Frame, app: &App, area: Rect) {
-    let info = app.info.as_ref().unwrap();
+    let info = match app.info.as_ref() {
+        Some(i) => i,
+        None => return,
+    };
     let tree = match &info.process_tree {
         Some(t) => t,
         None => {
@@ -801,7 +827,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("  "),
         Span::styled("[Tab/←→] switch tab", Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
+        Span::styled("[1–7] jump to tab", Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
         Span::styled("[Space] pause", Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
+        Span::styled("[?] help", Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
         Span::styled(tick_str, Style::default().fg(Color::DarkGray)),
     ];
@@ -834,6 +864,8 @@ fn mem_color(pct: f64) -> Color {
     }
 }
 
+/// RAM usage as % of total. Linux: /proc/meminfo; other platforms: sysinfo (so gauge is meaningful on macOS/Windows).
+#[cfg(target_os = "linux")]
 fn memory_percent(rss_kb: u64) -> f64 {
     let total = std::fs::read_to_string("/proc/meminfo")
         .ok()
@@ -848,4 +880,101 @@ fn memory_percent(rss_kb: u64) -> f64 {
         return 0.0;
     }
     (rss_kb as f64 / total as f64) * 100.0
+}
+
+#[cfg(not(target_os = "linux"))]
+fn memory_percent(rss_kb: u64) -> f64 {
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_memory();
+    let total_kb = sys.total_memory() / 1024;
+    if total_kb == 0 {
+        return 0.0;
+    }
+    (rss_kb as f64 / total_kb as f64) * 100.0
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_y) / 2),
+                Constraint::Percentage(percent_y),
+                Constraint::Percentage((100 - percent_y) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(
+            [
+                Constraint::Percentage((100 - percent_x) / 2),
+                Constraint::Percentage(percent_x),
+                Constraint::Percentage((100 - percent_x) / 2),
+            ]
+            .as_ref(),
+        )
+        .split(vertical[1]);
+    horizontal[1]
+}
+
+fn draw_help_overlay(f: &mut Frame, _app: &App, area: Rect) {
+    let block_area = centered_rect(70, 80, area);
+
+    let text = vec![
+        Line::from(Span::styled(
+            "Keyboard shortcuts",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  q / Ctrl-C", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  quit"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Tab / ← → / h / l", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  switch tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("  1–7", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  jump directly to a tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Space", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  pause / resume updates"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ?", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  toggle this help overlay"),
+        ]),
+    ];
+
+    let help = Paragraph::new(text)
+        .block(
+            Block::default()
+                .title(" Help ")
+                .borders(Borders::ALL),
+        )
+        .wrap(Wrap { trim: true });
+
+    f.render_widget(help, block_area);
+}
+
+fn max_connections() -> usize {
+    std::env::var("PEEK_TUI_MAX_CONNECTIONS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &usize| *n > 0 && *n <= 1000)
+        .unwrap_or(50)
+}
+
+fn max_open_files() -> usize {
+    std::env::var("PEEK_TUI_MAX_FILES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &usize| *n > 0 && *n <= 5000)
+        .unwrap_or(200)
 }

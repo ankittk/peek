@@ -26,3 +26,15 @@ pub fn resolve_socket_addr(addr: &SocketAddr) -> Option<String> {
         .ok()
         .flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resolve;
+
+    #[test]
+    fn resolve_handles_invalid_input() {
+        // This should not panic and will likely return None.
+        let res = resolve("not-a-valid-socket-address");
+        assert!(res.is_none());
+    }
+}

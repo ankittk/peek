@@ -14,10 +14,16 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
+rust-version = "1.74"
 license = "MIT"
-authors = ["Ankit <you@example.com>"]
+authors = ["Ankit <ankittkmail@gmail.com>"]
 repository = "https://github.com/ankittk/peek"
 readme = "README.md"
+description = "The process intelligence tool for Linux"
+homepage = "https://github.com/ankittk/peek"
+documentation = "https://github.com/ankittk/peek"
+keywords = ["process", "linux", "cli", "monitoring", "procfs"]
+categories = ["command-line-utilities", "os::linux-apis"]
 
 [workspace.dependencies]
 anyhow = "1"

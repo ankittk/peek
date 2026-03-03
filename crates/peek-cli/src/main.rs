@@ -1,8 +1,8 @@
 mod args;
+mod colors;
 #[cfg(unix)]
 mod peekd_client;
 mod tui;
-mod ui;
 
 use std::io::{self, Write};
 use std::time::Duration;
@@ -16,20 +16,91 @@ use export_engine::{export_pdf, render_html, render_markdown, to_json, ProcessSn
 use nix::sys::signal::{kill, Signal};
 #[cfg(target_os = "linux")]
 use nix::unistd::Pid;
-use owo_colors::OwoColorize;
+#[cfg(target_os = "linux")]
+use signal_engine::signals::SIGNAL_MENU;
 use peek_core::{
     collect, collect_extended, signal_impact, CollectOptions, PeekError, ProcessInfo, ProcessNode,
 };
 
 fn main() {
-    if let Err(err) = run() {
-        eprintln!("{} {:#}", "peek: error:".red().bold(), err);
-        std::process::exit(1);
+    let mut cli = Cli::parse();
+    apply_config_defaults(&mut cli);
+    init_color_from_env_and_cli(&cli);
+
+    if let Err(err) = run(&cli) {
+        eprintln!("{} {:#}", colors::red_bold("peek: error:"), err);
+
+        if cli.verbose {
+            for (idx, cause) in err.chain().enumerate().skip(1) {
+                if idx == 1 {
+                    eprintln!("  Caused by: {}", cause);
+                } else {
+                    eprintln!("             {}", cause);
+                }
+            }
+            eprintln!(
+                "{}",
+                colors::dimmed("Hint: set RUST_BACKTRACE=1 for a backtrace if this was unexpected.")
+            );
+        }
+
+        let code = exit_code_for_error(&err);
+        std::process::exit(code);
     }
 }
 
-fn run() -> Result<()> {
-    let mut cli = Cli::parse();
+/// Apply config file defaults to CLI (no_color, resolve, default_format). Called from main before init_color.
+fn apply_config_defaults(cli: &mut Cli) {
+    if let Some(cfg) = peek_core::config::load_config() {
+        if cfg.defaults.no_color {
+            cli.no_color = true;
+        }
+        if cfg.defaults.resolve {
+            cli.resolve = true;
+        }
+        if cli.export.is_none() && !cli.json && !cli.json_snapshot {
+            if let Some(ref fmt) = cfg.export.default_format {
+                match fmt.to_lowercase().as_str() {
+                    "json" => cli.json = true,
+                    "json-snapshot" | "json_snapshot" => cli.json_snapshot = true,
+                    "md" | "markdown" => cli.export = Some("md".to_string()),
+                    "html" => cli.export = Some("html".to_string()),
+                    "pdf" => cli.export = Some("pdf".to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+fn run(cli_args: &Cli) -> Result<()> {
+    // Work on a local, mutable copy so we can honour env defaults.
+    let mut cli = cli_args.clone();
+
+    // Configure network sampling window for this invocation if not already set.
+    // Default for non-watch (non-TUI) flows is to skip rate sampling (0ms) to
+    // avoid blocking quick reports; TUI callers can override via --net-sample-ms
+    // or PEEK_NET_SAMPLE_MS.
+    if std::env::var("PEEK_NET_SAMPLE_MS").is_err() && cli.watch.is_none() {
+        std::env::set_var("PEEK_NET_SAMPLE_MS", "0");
+    }
+    if let Some(ms) = cli.net_sample_ms {
+        std::env::set_var("PEEK_NET_SAMPLE_MS", ms.to_string());
+    }
+
+    // PEEK_DEFAULT_FORMAT: default output when user didn't pass explicit format flags.
+    if cli.export.is_none() && !cli.json && !cli.json_snapshot {
+        if let Ok(fmt) = std::env::var("PEEK_DEFAULT_FORMAT") {
+            match fmt.to_lowercase().as_str() {
+                "json" => cli.json = true,
+                "json-snapshot" | "json_snapshot" => cli.json_snapshot = true,
+                "md" | "markdown" => cli.export = Some("md".to_string()),
+                "html" => cli.export = Some("html".to_string()),
+                "pdf" => cli.export = Some("pdf".to_string()),
+                _ => {}
+            }
+        }
+    }
 
     // Port search mode (does not require a target PID/name)
     if let Some(port) = cli.port {
@@ -75,7 +146,16 @@ fn run() -> Result<()> {
         std::process::exit(status.code().unwrap_or(1));
     }
 
+    let had_no_target = cli.target.is_none();
     let pid = resolve_target(&cli)?;
+
+    // Interactive mode (peek with no args): after picking a process, default to live TUI
+    if had_no_target && cli.watch.is_none() && cli.export.is_none() && !cli.kill
+        && !cli.json && !cli.json_snapshot && !cli.history && cli.diff.is_none()
+        && cli.alert_add.is_none()
+    {
+        return tui::run_tui(pid, &cli, Duration::from_millis(2000));
+    }
 
     // --alert-add: add alert rule for this PID
     if let Some(ref args) = cli.alert_add {
@@ -98,7 +178,17 @@ fn run() -> Result<()> {
         return tui::run_tui(pid, &cli, Duration::from_millis(ms));
     }
 
-    let opts = make_opts(&cli);
+    // For md/html export include process tree in the snapshot
+    let opts = if cli.export.as_deref().map(|s| s.to_lowercase()).as_deref() == Some("md")
+        || cli.export.as_deref().map(|s| s.to_lowercase()).as_deref() == Some("markdown")
+        || cli.export.as_deref().map(|s| s.to_lowercase()).as_deref() == Some("html")
+    {
+        let mut o = make_opts(&cli);
+        o.tree = true;
+        o
+    } else {
+        make_opts(&cli)
+    };
     let info = collect_extended(pid, &opts).map_err(map_core_error)?;
 
     // --export
@@ -137,6 +227,29 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+/// Decide when to disable colours.
+///
+/// Rules:
+/// - `--no-color` or `PEEK_NO_COLOR` → force disable (set NO_COLOR).
+/// - Existing `NO_COLOR` is respected.
+/// - If stdout is not a TTY and no override is set, disable colours by default.
+fn init_color_from_env_and_cli(cli: &Cli) {
+    use std::io::IsTerminal;
+
+    if cli.no_color || std::env::var_os("PEEK_NO_COLOR").is_some() {
+        std::env::set_var("NO_COLOR", "1");
+        return;
+    }
+
+    if std::env::var_os("NO_COLOR").is_some() {
+        return;
+    }
+
+    if !io::stdout().is_terminal() {
+        std::env::set_var("NO_COLOR", "1");
+    }
+}
+
 // ─── Opts helper ─────────────────────────────────────────────────────────────
 
 fn make_opts(cli: &Cli) -> CollectOptions {
@@ -157,12 +270,12 @@ fn run_diff(pid1: i32, pid2: i32) -> Result<()> {
     let i1 = collect(pid1).map_err(map_core_error)?;
     let i2 = collect(pid2).map_err(map_core_error)?;
 
-    println!("{}", "PROCESS COMPARISON".bold());
+    println!("{}", colors::bold("PROCESS COMPARISON"));
     println!(
         "{:<28} {:>22} {:>22}",
-        "Field".bold(),
-        format!("{} ({})", i1.name.cyan().bold(), pid1),
-        format!("{} ({})", i2.name.cyan().bold(), pid2)
+        colors::bold("Field"),
+        format!("{} ({})", colors::cyan_bold(&i1.name), pid1),
+        format!("{} ({})", colors::cyan_bold(&i2.name), pid2)
     );
     println!("{}", "─".repeat(74));
 
@@ -190,9 +303,9 @@ fn run_diff(pid1: i32, pid2: i32) -> Result<()> {
     // Delta row for memory
     let rss_delta = i2.rss_kb as i64 - i1.rss_kb as i64;
     let delta_str = if rss_delta >= 0 {
-        format!("+{} KB", rss_delta).yellow().to_string()
+        colors::yellow(&format!("+{} KB", rss_delta))
     } else {
-        format!("{} KB", rss_delta).green().to_string()
+        colors::green(&format!("{} KB", rss_delta))
     };
     println!("{:<28} {:>44}", "RSS delta (pid2 - pid1)", delta_str);
 
@@ -205,7 +318,7 @@ fn run_diff(pid1: i32, pid2: i32) -> Result<()> {
 fn run_alert_list() -> Result<()> {
     eprintln!(
         "{}",
-        "peekd (alerts) is only available on Linux/Unix.".yellow()
+        colors::yellow("peekd (alerts) is only available on Linux/Unix.")
     );
     std::process::exit(1);
 }
@@ -214,7 +327,7 @@ fn run_alert_list() -> Result<()> {
 fn run_alert_remove(_rule_id: &str) -> Result<()> {
     eprintln!(
         "{}",
-        "peekd (alerts) is only available on Linux/Unix.".yellow()
+        colors::yellow("peekd (alerts) is only available on Linux/Unix.")
     );
     std::process::exit(1);
 }
@@ -223,7 +336,7 @@ fn run_alert_remove(_rule_id: &str) -> Result<()> {
 fn run_alert_add(_pid: i32, _args: &[String]) -> Result<()> {
     eprintln!(
         "{}",
-        "peekd (alerts) is only available on Linux/Unix.".yellow()
+        colors::yellow("peekd (alerts) is only available on Linux/Unix.")
     );
     std::process::exit(1);
 }
@@ -233,7 +346,7 @@ fn run_alert_list() -> Result<()> {
     if !peekd_client::ping() {
         eprintln!(
             "{}",
-            "peekd is not running. Start it with: sudo systemctl start peekd (or from repo: sudo mkdir -p /run/peekd && sudo ./target/release/peekd &)".yellow()
+            colors::yellow("peekd is not running. Start it with: sudo systemctl start peekd (or from repo: sudo mkdir -p /run/peekd && sudo ./target/release/peekd &)")
         );
         std::process::exit(1);
     }
@@ -243,7 +356,7 @@ fn run_alert_list() -> Result<()> {
         return Ok(());
     }
     println!();
-    println!("{}", "ALERT RULES".bold());
+    println!("{}", colors::bold("ALERT RULES"));
     println!("{}", "─".repeat(70));
     println!(
         "{:<28} {:>8} {:>14} {:>10} {:>8}",
@@ -264,15 +377,15 @@ fn run_alert_remove(rule_id: &str) -> Result<()> {
     if !peekd_client::ping() {
         eprintln!(
             "{}",
-            "peekd is not running. Start it with: sudo systemctl start peekd (or from repo: sudo mkdir -p /run/peekd && sudo ./target/release/peekd &)".yellow()
+            colors::yellow("peekd is not running. Start it with: sudo systemctl start peekd (or from repo: sudo mkdir -p /run/peekd && sudo ./target/release/peekd &)")
         );
         std::process::exit(1);
     }
     let removed = peekd_client::alert_remove(rule_id)?;
     if removed {
-        println!("{} Removed rule {}", "✓".green(), rule_id.cyan());
+        println!("{} Removed rule {}", colors::green("✓"), colors::cyan(rule_id));
     } else {
-        eprintln!("{} No rule with id '{}'", "⚠".yellow(), rule_id);
+        eprintln!("{} No rule with id '{}'", colors::yellow("⚠"), rule_id);
     }
     Ok(())
 }
@@ -282,7 +395,7 @@ fn run_alert_add(pid: i32, args: &[String]) -> Result<()> {
     if !peekd_client::ping() {
         eprintln!(
             "{}",
-            "peekd is not running. Start it with: sudo systemctl start peekd (or from repo: sudo mkdir -p /run/peekd && sudo ./target/release/peekd &)".yellow()
+            colors::yellow("peekd is not running. Start it with: sudo systemctl start peekd (or from repo: sudo mkdir -p /run/peekd && sudo ./target/release/peekd &)")
         );
         std::process::exit(1);
     }
@@ -291,7 +404,7 @@ fn run_alert_add(pid: i32, args: &[String]) -> Result<()> {
         _ => {
             eprintln!(
                 "{}",
-                "peek --alert-add requires METRIC OP THRESHOLD (e.g. cpu_percent gt 80)".yellow()
+                colors::yellow("peek --alert-add requires METRIC OP THRESHOLD (e.g. cpu_percent gt 80)")
             );
             std::process::exit(1);
         }
@@ -310,8 +423,8 @@ fn run_alert_add(pid: i32, args: &[String]) -> Result<()> {
     let rule_id = peekd_client::alert_add(pid, metric, op, threshold, "log", None)?;
     println!(
         "{} Alert rule added: {} (pid {})",
-        "✓".green(),
-        rule_id.cyan(),
+        colors::green("✓"),
+        colors::cyan(&rule_id),
         pid
     );
     Ok(())
@@ -324,7 +437,7 @@ fn run_history(pid: i32, _cli: &Cli) -> Result<()> {
     let _ = pid;
     eprintln!(
         "{}",
-        "peekd (history) is only available on Linux/Unix.".yellow()
+        colors::yellow("peekd (history) is only available on Linux/Unix.")
     );
     std::process::exit(1);
 }
@@ -334,11 +447,11 @@ fn run_history(pid: i32, _cli: &Cli) -> Result<()> {
     if !peekd_client::ping() {
         eprintln!(
             "{}",
-            "peekd is not running. Start it with: sudo systemctl start peekd (or from repo: sudo mkdir -p /run/peekd && sudo ./target/release/peekd &)".yellow()
+            colors::yellow("peekd is not running. Start it with: sudo systemctl start peekd (or from repo: sudo mkdir -p /run/peekd && sudo ./target/release/peekd &)")
         );
         eprintln!(
             "{}",
-            "Or register this PID manually: peekd watch <PID>".dimmed()
+            colors::dimmed("Or register this PID manually: peekd watch <PID>")
         );
         std::process::exit(1);
     }
@@ -350,7 +463,7 @@ fn run_history(pid: i32, _cli: &Cli) -> Result<()> {
     if samples.is_empty() {
         eprintln!(
             "{}",
-            "No history yet for this PID. Wait for peekd to accumulate samples.".yellow()
+            colors::yellow("No history yet for this PID. Wait for peekd to accumulate samples.")
         );
         return Ok(());
     }
@@ -358,29 +471,30 @@ fn run_history(pid: i32, _cli: &Cli) -> Result<()> {
     println!();
     println!(
         "{} — last {} samples",
-        "RESOURCE HISTORY".bold(),
+        colors::bold("RESOURCE HISTORY"),
         samples.len()
     );
     println!("{}", "─".repeat(70));
     println!(
-        "{:<25}  {:>8}  {:>10}  {:>8}",
-        "Time", "CPU%", "RSS MB", "Threads"
+        "{:<25}  {:>8}  {:>10}  {:>10}  {:>8}",
+        "Time", "CPU%", "RSS MB", "VSZ MB", "Threads"
     );
     println!("{}", "─".repeat(70));
 
     for s in &samples {
         println!(
-            "{:<25}  {:>8}  {:>10}  {:>8}",
+            "{:<25}  {:>8}  {:>10}  {:>10}  {:>8}",
             s.ts,
             s.cpu_percent
                 .map(|c| format!("{:.1}%", c))
                 .unwrap_or_else(|| "-".to_string()),
             format!("{:.1}", s.rss_kb as f64 / 1024.0),
+            format!("{:.1}", s.vm_size_kb as f64 / 1024.0),
             s.threads
         );
     }
 
-    // Sparkline in terminal using block chars
+    // Sparklines in terminal using block chars
     let cpu_vals: Vec<Option<f64>> = samples.iter().map(|s| s.cpu_percent).collect();
     print_terminal_sparkline("CPU %  ", &cpu_vals, 100.0);
 
@@ -396,6 +510,16 @@ fn run_history(pid: i32, _cli: &Cli) -> Result<()> {
         .max(1.0);
     print_terminal_sparkline("RSS MB ", &rss_vals, rss_max);
 
+    let thread_vals: Vec<Option<f64>> =
+        samples.iter().map(|s| Some(s.threads as f64)).collect();
+    let threads_max = thread_vals
+        .iter()
+        .flatten()
+        .cloned()
+        .fold(0.0f64, f64::max)
+        .max(1.0);
+    print_terminal_sparkline("Threads", &thread_vals, threads_max);
+
     Ok(())
 }
 
@@ -406,7 +530,7 @@ fn run_port_search(port: u16) -> Result<()> {
     let _ = port;
     eprintln!(
         "{}",
-        "Port search (--port) is only available on Linux.".yellow()
+        colors::yellow("Port search (--port) is only available on Linux.")
     );
     std::process::exit(1);
 }
@@ -419,7 +543,7 @@ fn run_port_search(port: u16) -> Result<()> {
     println!();
     println!(
         "{} Searching for processes using TCP/UDP port {}...",
-        "🔎".bold(),
+        colors::bold("🔎"),
         port
     );
 
@@ -527,7 +651,7 @@ fn print_terminal_sparkline(label: &str, vals: &[Option<f64>], max: f64) {
 fn run_kill_panel(_pid: i32, _info: &ProcessInfo) -> Result<()> {
     eprintln!(
         "{}",
-        "Interactive kill/signal panel is only available on Linux.".yellow()
+        colors::yellow("Interactive kill/signal panel is only available on Linux.")
     );
     std::process::exit(1);
 }
@@ -538,12 +662,12 @@ fn run_kill_panel(pid: i32, info: &ProcessInfo) -> Result<()> {
     let impact = signal_impact(pid).ok();
 
     println!();
-    println!("{}", "⚡ PROCESS CONTROL".bold().yellow());
+    println!("{}", colors::yellow_bold("⚡ PROCESS CONTROL"));
     println!("{}", "─".repeat(66));
     println!(
         "  Target: {} {} (pid {})",
-        "▶".yellow(),
-        info.name.cyan().bold(),
+        colors::yellow("▶"),
+        colors::cyan_bold(&info.name),
         pid
     );
 
@@ -553,43 +677,49 @@ fn run_kill_panel(pid: i32, info: &ProcessInfo) -> Result<()> {
         if imp.active_tcp_connections > 0 {
             println!(
                 "  {} {} active TCP connection(s) will be affected.",
-                "⚠".yellow(),
+                colors::yellow("⚠"),
                 imp.active_tcp_connections
             );
         }
         if imp.child_process_count > 0 {
             println!(
                 "  {} {} child process(es) will be orphaned/killed.",
-                "⚠".yellow(),
+                colors::yellow("⚠"),
                 imp.child_process_count
             );
         }
         if imp.has_file_locks {
-            println!("  {} Process holds exclusive file lock(s).", "⚠".yellow());
+            println!("  {} Process holds exclusive file lock(s).", colors::yellow("⚠"));
         }
         if let Some(ref unit) = imp.systemd_unit {
-            println!("  {} Managed by systemd unit: {}", "ℹ".cyan(), unit.bold());
+            println!("  {} Managed by systemd unit: {}", colors::cyan("ℹ"), colors::bold(unit));
         }
         if !imp.recommendation.is_empty() {
             println!();
-            println!("  {}: {}", "Recommendation".bold(), imp.recommendation);
+            println!("  {}: {}", colors::bold("Recommendation"), imp.recommendation);
         }
     }
 
+    // Signal menu: descriptions from signal-engine; nix::Signal from number
     println!();
-    println!("  [1] Graceful stop  — SIGTERM (15)  asks the process to exit cleanly");
-    println!("  [2] Hard kill      — SIGKILL  (9)  forces immediate termination");
-    println!("  [3] Pause          — SIGSTOP (19)  suspends execution");
-    println!("  [4] Resume         — SIGCONT (18)  resumes a paused process");
-    println!("  [5] Reload config  — SIGHUP   (1)  standard config-reload signal");
-    println!("  [6] USR1           — SIGUSR1 (10)  user-defined signal 1");
-    println!("  [7] USR2           — SIGUSR2 (12)  user-defined signal 2");
+    println!("{}", colors::bold("  Signals:"));
+    let menu: Vec<(usize, Signal, &str, &str, i32)> = SIGNAL_MENU
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, (name, num, desc))| {
+            let sig = Signal::try_from(*num).ok()?;
+            Some((idx + 1, sig, *name, *desc, *num))
+        })
+        .collect();
+    for (idx, _sig, name, desc, num) in &menu {
+        println!("  [{idx}] {name:<8} ({num:>2})  {desc}");
+    }
 
     // Systemd shortcuts
     if let Some(Some(ref unit)) = impact.as_ref().map(|i| i.systemd_unit.as_ref().cloned()) {
         println!();
-        println!("  [s] systemctl stop {}", unit.cyan());
-        println!("  [R] systemctl restart {}", unit.cyan());
+        println!("  [s] systemctl stop {}", colors::cyan(unit));
+        println!("  [R] systemctl restart {}", colors::cyan(unit));
     }
 
     println!();
@@ -604,13 +734,6 @@ fn run_kill_panel(pid: i32, info: &ProcessInfo) -> Result<()> {
         let choice = input.trim();
 
         match choice {
-            "1" => return send_signal(pid, Signal::SIGTERM, false),
-            "2" => return send_signal(pid, Signal::SIGKILL, true),
-            "3" => return send_signal(pid, Signal::SIGSTOP, false),
-            "4" => return send_signal(pid, Signal::SIGCONT, false),
-            "5" => return send_signal(pid, Signal::SIGHUP, false),
-            "6" => return send_signal(pid, Signal::SIGUSR1, false),
-            "7" => return send_signal(pid, Signal::SIGUSR2, false),
             "s" => {
                 if let Some(Some(unit)) = impact.as_ref().map(|i| i.systemd_unit.as_ref().cloned())
                 {
@@ -631,7 +754,17 @@ fn run_kill_panel(pid: i32, info: &ProcessInfo) -> Result<()> {
                 println!("  Aborted.");
                 return Ok(());
             }
-            _ => println!("  Unknown choice, try again."),
+            other => {
+                if let Ok(idx) = other.parse::<usize>() {
+                    if let Some((_, sig, _name, _desc, _num)) =
+                        menu.iter().find(|(i, _, _, _, _)| *i == idx)
+                    {
+                        let require_confirm = matches!(sig, Signal::SIGKILL);
+                        return send_signal(pid, *sig, require_confirm);
+                    }
+                }
+                println!("  Unknown choice, try again.");
+            }
         }
     }
 }
@@ -652,8 +785,8 @@ fn send_signal(pid: i32, sig: Signal, require_confirm: bool) -> Result<()> {
         }
     }
     match kill(Pid::from_raw(pid), sig) {
-        Ok(()) => println!("  {} Sent {:?} to pid {}", "✓".green(), sig, pid),
-        Err(e) => eprintln!("  {} Failed to send signal: {}", "✗".red(), e),
+        Ok(()) => println!("  {} Sent {:?} to pid {}", colors::green("✓"), sig, pid),
+        Err(e) => eprintln!("  {} Failed to send signal: {}", colors::red("✗"), e),
     }
     Ok(())
 }
@@ -665,11 +798,11 @@ fn run_systemctl(action: &str, unit: &str) -> Result<()> {
         .args([action, unit])
         .status()?;
     if status.success() {
-        println!("  {} systemctl {} {}", "✓".green(), action, unit);
+        println!("  {} systemctl {} {}", colors::green("✓"), action, unit);
     } else {
         eprintln!(
             "  {} systemctl {} {} exited with status {:?}",
-            "✗".red(),
+            colors::red("✗"),
             action,
             unit,
             status.code()
@@ -687,7 +820,7 @@ fn run_export(snapshot: &ProcessSnapshot, format: &str) -> Result<()> {
         "html" => println!("{}", render_html(snapshot)),
         "pdf" => {
             let filename = export_pdf(snapshot)?;
-            println!("{} PDF report written to {}", "✓".green(), filename.cyan());
+            println!("{} PDF report written to {}", colors::green("✓"), colors::cyan(&filename));
         }
         other => anyhow::bail!("unknown format '{}' (json | html | md | pdf)", other),
     }
@@ -699,26 +832,26 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     println!();
     println!(
         "🔍 {} {}  {}",
-        "PROCESS:".bold(),
-        info.name.cyan().bold(),
-        format!("(PID {})", info.pid).dimmed()
+        colors::bold("PROCESS:"),
+        colors::cyan_bold(&info.name),
+        colors::dimmed(&format!("(PID {})", info.pid))
     );
     println!("{}", "─".repeat(64));
     if let Some(desc) = peek_core::binary_description(&info.name) {
-        println!("  {} {}", "desc    :".dimmed(), desc);
+        println!("  {} {}", colors::dimmed("desc    :"), desc);
     }
-    println!("  {} {}", "cmdline :".dimmed(), info.cmdline);
+    println!("  {} {}", colors::dimmed("cmdline :"), info.cmdline);
     if let Some(exe) = &info.exe {
-        println!("  {} {}", "exe     :".dimmed(), exe);
+        println!("  {} {}", colors::dimmed("exe     :"), exe);
     }
-    println!("  {} {}", "state   :".dimmed(), colorize_state(&info.state));
-    println!("  {} {}", "ppid    :".dimmed(), info.ppid);
-    println!("  {} {}:{}", "uid:gid :".dimmed(), info.uid, info.gid);
+    println!("  {} {}", colors::dimmed("state   :"), colorize_state(&info.state));
+    println!("  {} {}", colors::dimmed("ppid    :"), info.ppid);
+    println!("  {} {}:{}", colors::dimmed("uid:gid :"), info.uid, info.gid);
     if let Some(started) = info.started_at {
         let age = age_string(started);
         println!(
             "  {} {} ({})",
-            "started :".dimmed(),
+            colors::dimmed("started :"),
             started.format("%Y-%m-%d %H:%M:%S"),
             age
         );
@@ -731,14 +864,14 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     };
     println!(
         "  {} {} KB RSS / {} KB VSZ{}",
-        "memory  :".dimmed(),
+        colors::dimmed("memory  :"),
         info.rss_kb,
         info.vm_size_kb,
         mem_extra
     );
-    println!("  {} {}", "threads :".dimmed(), info.threads);
+    println!("  {} {}", colors::dimmed("threads :"), info.threads);
     if let Some(fds) = info.fd_count {
-        println!("  {} {}", "open fds:".dimmed(), fds);
+        println!("  {} {}", colors::dimmed("open fds:"), fds);
         #[cfg(target_os = "linux")]
         if let Some(limit) = soft_fd_limit(info.pid) {
             if limit > 0 {
@@ -746,7 +879,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
                 if ratio >= 0.8 {
                     println!(
                         "  {} FD usage near soft limit: {}/{} ({:.0}%)",
-                        "warn   :".yellow(),
+                        colors::yellow("warn   :"),
                         fds,
                         limit,
                         ratio * 100.0
@@ -759,16 +892,16 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     // Resources
     if cli.resources || cli.all {
         println!();
-        println!("{}", "📊 RESOURCES".bold());
+        println!("{}", colors::bold("📊 RESOURCES"));
         println!("{}", "─".repeat(64));
         if let Some(cpu) = info.cpu_percent {
             let bar = progress_bar(cpu / 100.0, 20);
             let cs = if cpu > 80.0 {
-                format!("{:.1}%", cpu).red().bold().to_string()
+                colors::red_bold(&format!("{:.1}%", cpu))
             } else if cpu > 50.0 {
-                format!("{:.1}%", cpu).yellow().to_string()
+                colors::yellow(&format!("{:.1}%", cpu))
             } else {
-                format!("{:.1}%", cpu).green().to_string()
+                colors::green(&format!("{:.1}%", cpu))
             };
             println!("  CPU    {} {}", bar, cs);
         }
@@ -798,10 +931,10 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     if let Some(gpus) = &info.gpu {
         if !gpus.is_empty() {
             println!();
-            println!("{}", "🖥  GPU".bold());
+            println!("{}", colors::bold("🖥  GPU"));
             println!("{}", "─".repeat(64));
             for g in gpus {
-                println!("  #{} {} [{}]", g.index, g.name.cyan(), g.source.dimmed());
+                println!("  #{} {} [{}]", g.index, colors::cyan(&g.name), colors::dimmed(&g.source));
                 if let Some(u) = g.utilization_percent {
                     println!("    Util   {} {:.1}%", progress_bar(u / 100.0, 20), u);
                 }
@@ -814,7 +947,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
                     );
                 }
                 if let Some(pmb) = g.process_used_mb {
-                    println!("    Process {} {:.0} MB (this PID)", "▶".cyan(), pmb);
+                    println!("    Process {} {:.0} MB (this PID)", colors::cyan("▶"), pmb);
                 }
             }
         }
@@ -823,7 +956,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     // Kernel
     if let Some(k) = &info.kernel {
         println!();
-        println!("{}", "🧠 KERNEL CONTEXT".bold());
+        println!("{}", colors::bold("🧠 KERNEL CONTEXT"));
         println!("{}", "─".repeat(64));
         println!(
             "  Scheduler  : {} | Nice: {} | Priority: {}",
@@ -857,12 +990,12 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     // Network
     if let Some(net) = &info.network {
         println!();
-        println!("{}", "🌐 NETWORK".bold());
+        println!("{}", colors::bold("🌐 NETWORK"));
         println!("{}", "─".repeat(64));
         if let (Some(rx), Some(tx)) = (net.traffic_rx_bytes_per_sec, net.traffic_tx_bytes_per_sec) {
             println!(
                 "  {} Traffic: RX {}  TX {}",
-                "▶".cyan(),
+                colors::cyan("▶"),
                 format_bytes_per_sec(rx),
                 format_bytes_per_sec(tx)
             );
@@ -879,7 +1012,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
             for s in &net.listening_tcp {
                 println!(
                     "  {} Listening (TCP): {} {}:{}",
-                    "▶".green(),
+                    colors::green("▶"),
                     s.protocol,
                     s.local_addr,
                     s.local_port
@@ -888,7 +1021,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
             for s in &net.listening_udp {
                 println!(
                     "  {} Listening (UDP): {} {}:{}",
-                    "▶".green(),
+                    colors::green("▶"),
                     s.protocol,
                     s.local_addr,
                     s.local_port
@@ -896,7 +1029,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
             }
             if let Some(unix) = &net.unix_sockets {
                 if !unix.is_empty() {
-                    println!("  {} Unix sockets ({}):", "▶".cyan(), unix.len());
+                    println!("  {} Unix sockets ({}):", colors::cyan("▶"), unix.len());
                     for u in unix.iter().take(15) {
                         let path = if u.path.is_empty() {
                             "<anonymous>"
@@ -913,7 +1046,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
             if !net.connections.is_empty() {
                 println!(
                     "  {} Connections ({}):",
-                    "▶".yellow(),
+                    colors::yellow("▶"),
                     net.connections.len()
                 );
                 for c in net.connections.iter().take(20) {
@@ -931,7 +1064,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
                         c.local_addr,
                         c.local_port,
                         remote_display,
-                        c.state.dimmed()
+                        colors::dimmed(&c.state)
                     );
                 }
                 if net.connections.len() > 20 {
@@ -944,7 +1077,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     // Files
     if let Some(files) = &info.open_files {
         println!();
-        println!("{}", "📁 OPEN FILES".bold());
+        println!("{}", colors::bold("📁 OPEN FILES"));
         println!("{}", "─".repeat(64));
         println!("  {:>4}  {:>10}  Path", "FD", "Type");
         println!("  {}", "─".repeat(58));
@@ -952,7 +1085,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
             println!(
                 "  {:>4}  {:>10}  {}",
                 f.fd,
-                f.fd_type.dimmed(),
+                colors::dimmed(&f.fd_type),
                 f.description
             );
         }
@@ -965,13 +1098,13 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     // Env
     if let Some(env_vars) = &info.env_vars {
         println!();
-        println!("{}", "🔐 ENVIRONMENT".bold());
+        println!("{}", colors::bold("🔐 ENVIRONMENT"));
         println!("{}", "─".repeat(64));
         let secrets = env_vars.iter().filter(|v| v.redacted).count();
         if secrets > 0 {
             println!(
                 "  {} {} secret(s) detected and redacted.",
-                "⚠️".yellow(),
+                colors::yellow("⚠️"),
                 secrets
             );
         }
@@ -983,12 +1116,12 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
             .min(40);
         for v in env_vars {
             let ks = if v.redacted {
-                v.key.yellow().to_string()
+                colors::yellow(&v.key)
             } else {
-                v.key.cyan().to_string()
+                colors::cyan(&v.key)
             };
             let vs = if v.redacted {
-                format!("{} {}", v.value, "[REDACTED]".red())
+                format!("{} {}", v.value, colors::red("[REDACTED]"))
             } else {
                 v.value.chars().take(80).collect()
             };
@@ -999,7 +1132,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
     // Tree
     if let Some(tree) = &info.process_tree {
         println!();
-        println!("{}", "🌳 PROCESS TREE".bold());
+        println!("{}", colors::bold("🌳 PROCESS TREE"));
         println!("{}", "─".repeat(64));
         print_tree(tree, "", true, info.pid);
     }
@@ -1010,7 +1143,7 @@ fn print_report(info: &ProcessInfo, cli: &Cli) {
 fn print_tree(node: &ProcessNode, prefix: &str, is_last: bool, target: i32) {
     let conn = if is_last { "└── " } else { "├── " };
     let name = if node.pid == target {
-        node.name.cyan().bold().to_string()
+        colors::cyan_bold(&node.name)
     } else {
         node.name.clone()
     };
@@ -1033,8 +1166,41 @@ fn print_tree(node: &ProcessNode, prefix: &str, is_last: bool, target: i32) {
 fn map_core_error(err: PeekError) -> anyhow::Error {
     match err {
         PeekError::NotFound(pid) => anyhow::anyhow!("process {} not found", pid),
+        PeekError::ProcIo { pid, source } if source.kind() == io::ErrorKind::PermissionDenied => {
+            anyhow::anyhow!(
+                "permission denied reading /proc/{} (try --sudo or run as root): {}",
+                pid,
+                source
+            )
+        }
         other => anyhow::anyhow!(other),
     }
+}
+
+/// Map a high-level error into a process exit code suitable for scripting.
+///
+/// Currently:
+/// - 3 → process not found
+/// - 4 → permission denied (/proc, IO)
+/// - 1 → all other errors
+fn exit_code_for_error(err: &anyhow::Error) -> i32 {
+    use std::io::ErrorKind;
+
+    if let Some(peek) = err.downcast_ref::<PeekError>() {
+        return match peek {
+            PeekError::NotFound(_) => 3,
+            PeekError::ProcIo { source, .. } if source.kind() == ErrorKind::PermissionDenied => 4,
+            _ => 1,
+        };
+    }
+
+    if let Some(io_err) = err.downcast_ref::<io::Error>() {
+        if io_err.kind() == ErrorKind::PermissionDenied {
+            return 4;
+        }
+    }
+
+    1
 }
 
 fn resolve_target(cli: &Cli) -> Result<i32> {
@@ -1046,11 +1212,19 @@ fn resolve_target(cli: &Cli) -> Result<i32> {
         }
         return resolve_by_name(t);
     }
-    eprintln!(
-        "{}",
-        "peek: no target given. Usage: peek <PID|name> [options]".yellow()
-    );
-    std::process::exit(1);
+
+    // No explicit target: interactive mode — pick a process (Linux only).
+    #[cfg(target_os = "linux")]
+    return interactive_select_pid();
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        eprintln!(
+            "{}",
+            colors::yellow("peek: no target given. Usage: peek <PID|name> [options]. On Linux, run peek with no args for interactive process picker.")
+        );
+        std::process::exit(1);
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1078,6 +1252,142 @@ fn resolve_by_name(name: &str) -> Result<i32> {
             name,
             &matches[..matches.len().min(5)]
         ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn interactive_select_pid() -> Result<i32> {
+    use procfs::process::all_processes;
+
+    #[derive(Debug)]
+    struct Row {
+        pid: i32,
+        name: String,
+        cmd: String,
+    }
+
+    let mut rows = Vec::new();
+    for pr in all_processes()?.flatten() {
+        let pid = pr.pid;
+        let stat_name = pr
+            .stat()
+            .ok()
+            .map(|s| s.comm)
+            .unwrap_or_else(|| "?".to_string());
+        let cmdline = pr
+            .cmdline()
+            .ok()
+            .filter(|c| !c.is_empty())
+            .map(|c| c.join(" "))
+            .unwrap_or_else(|| stat_name.clone());
+        rows.push(Row {
+            pid,
+            name: stat_name,
+            cmd: cmdline,
+        });
+    }
+
+    if rows.is_empty() {
+        anyhow::bail!("no processes found");
+    }
+
+    // Sort by PID ascending for a stable view.
+    rows.sort_by_key(|r| r.pid);
+
+    let mut filter: Option<String> = None;
+
+    loop {
+        println!();
+        println!("{}", colors::bold("Interactive process browser"));
+        println!("{}", "─".repeat(64));
+
+        let filtered: Vec<(usize, &Row)> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                if let Some(ref f) = filter {
+                    let f = f.to_lowercase();
+                    r.name.to_lowercase().contains(&f) || r.cmd.to_lowercase().contains(&f)
+                } else {
+                    true
+                }
+            })
+            .take(30)
+            .collect();
+
+        println!(
+            "{:<4} {:>6}  {:<20}  Command (truncated)",
+            "#", "PID", "Name"
+        );
+        println!("{}", "─".repeat(64));
+        for (idx, row) in &filtered {
+            let cmd_trunc: String = if row.cmd.len() > 40 {
+                format!("{}…", &row.cmd[..40])
+            } else {
+                row.cmd.clone()
+            };
+            println!("{:<4} {:>6}  {:<20}  {}", idx + 1, row.pid, row.name, cmd_trunc);
+        }
+
+        println!();
+        println!(
+            "{}",
+            colors::dimmed(
+                "Enter index, PID, or search term (/filter). Empty input to cancel, q to quit."
+            )
+        );
+        print!("peek> ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim();
+
+        if input.is_empty() || input.eq_ignore_ascii_case("q") {
+            anyhow::bail!("no target selected");
+        }
+
+        if let Some(rest) = input.strip_prefix('/') {
+            filter = if rest.is_empty() {
+                None
+            } else {
+                Some(rest.to_string())
+            };
+            continue;
+        }
+
+        // Try explicit PID first.
+        if let Ok(pid) = input.parse::<i32>() {
+            if rows.iter().any(|r| r.pid == pid) {
+                return Ok(pid);
+            }
+        }
+
+        // Try visible index.
+        if let Ok(idx) = input.parse::<usize>() {
+            if idx > 0 && idx <= filtered.len() {
+                return Ok(filtered[idx - 1].1.pid);
+            }
+        }
+
+        // Fuzzy match on name/cmd.
+        let q = input.to_lowercase();
+        let matches: Vec<&Row> = rows
+            .iter()
+            .filter(|r| {
+                r.name.to_lowercase().contains(&q) || r.cmd.to_lowercase().contains(&q)
+            })
+            .collect();
+        match matches.len() {
+            0 => {
+                println!("No processes match '{}'.", input);
+            }
+            1 => {
+                return Ok(matches[0].pid);
+            }
+            _ => {
+                filter = Some(q);
+            }
+        }
     }
 }
 
@@ -1120,23 +1430,24 @@ fn resolve_by_name(name: &str) -> Result<i32> {
 
 fn colorize_state(s: &str) -> String {
     if s.starts_with("Running") {
-        s.green().to_string()
+        colors::green(s)
     } else if s.starts_with("Zombie") | s.starts_with("Dead") {
-        s.red().bold().to_string()
+        colors::red_bold(s)
     } else if s.starts_with("Uninterruptible") {
-        s.yellow().to_string()
+        colors::yellow(s)
     } else {
         s.to_string()
     }
 }
 
 fn oom_colored(score: i32) -> String {
+    let s = score.to_string();
     if score > 700 {
-        score.to_string().red().bold().to_string()
+        colors::red_bold(&s)
     } else if score > 400 {
-        score.to_string().yellow().to_string()
+        colors::yellow(&s)
     } else {
-        score.to_string().green().to_string()
+        colors::green(&s)
     }
 }
 
@@ -1158,6 +1469,7 @@ fn progress_bar(fraction: f64, width: usize) -> String {
     )
 }
 
+/// RAM usage as % of total. Linux: /proc/meminfo; other platforms: sysinfo.
 #[cfg(target_os = "linux")]
 fn memory_percent(rss_kb: u64) -> f64 {
     let total = std::fs::read_to_string("/proc/meminfo")
@@ -1177,7 +1489,9 @@ fn memory_percent(rss_kb: u64) -> f64 {
 
 #[cfg(not(target_os = "linux"))]
 fn memory_percent(rss_kb: u64) -> f64 {
-    let total_kb = sysinfo::System::new_all().total_memory() / 1024;
+    let mut sys = sysinfo::System::new_all();
+    sys.refresh_memory();
+    let total_kb = sys.total_memory() / 1024;
     if total_kb == 0 {
         return 0.0;
     }

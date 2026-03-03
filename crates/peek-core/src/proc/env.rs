@@ -1,4 +1,4 @@
-use crate::EnvVar;
+use crate::{EnvVar, Result};
 use proc_reader::environ::{read_environ, EnvironEntry};
 
 // Key-based patterns for secret-ish variables. These are deliberately broad and
@@ -26,7 +26,7 @@ const SECRET_KEY_PATTERNS: &[&str] = &[
     "WEBHOOK_URL",
 ];
 
-pub fn collect_env(pid: i32) -> anyhow::Result<Vec<EnvVar>> {
+pub fn collect_env(pid: i32) -> Result<Vec<EnvVar>> {
     let raw: Vec<EnvironEntry> = read_environ(pid)?;
     let mut vars = Vec::with_capacity(raw.len());
 

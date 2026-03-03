@@ -4,6 +4,9 @@
 // avoids depending on peek-core types. Callers can adapt `FdEntry` into
 // whatever domain struct they need.
 
+use crate::error::{io_to_error, Result};
+use std::path::PathBuf;
+
 /// One entry from `/proc/<pid>/fd`.
 #[derive(Debug, Clone)]
 pub struct FdEntry {
@@ -14,11 +17,12 @@ pub struct FdEntry {
 
 /// Collect detailed information about open file descriptors for `pid`.
 #[cfg(target_os = "linux")]
-pub fn read_fd(pid: i32) -> anyhow::Result<Vec<FdEntry>> {
+pub fn read_fd(pid: i32) -> Result<Vec<FdEntry>> {
     let fd_dir = format!("/proc/{}/fd", pid);
+    let path = PathBuf::from(&fd_dir);
     let mut files = Vec::new();
 
-    let entries = std::fs::read_dir(&fd_dir)?;
+    let entries = std::fs::read_dir(&path).map_err(|e| io_to_error(path.clone(), e, pid))?;
     let mut pairs: Vec<(u32, std::path::PathBuf)> = entries
         .flatten()
         .filter_map(|e| {
@@ -42,20 +46,21 @@ pub fn read_fd(pid: i32) -> anyhow::Result<Vec<FdEntry>> {
 
 /// Count open file descriptors for `pid`.
 #[cfg(target_os = "linux")]
-pub fn count_fds(pid: i32) -> anyhow::Result<usize> {
+pub fn count_fds(pid: i32) -> Result<usize> {
     let fd_dir = format!("/proc/{}/fd", pid);
-    let count = std::fs::read_dir(fd_dir)?.count();
+    let path = PathBuf::from(&fd_dir);
+    let count = std::fs::read_dir(&path).map_err(|e| io_to_error(path, e, pid))?.count();
     Ok(count)
 }
 
 /// Non-Linux stub implementations: /proc is not available.
 #[cfg(not(target_os = "linux"))]
-pub fn read_fd(_pid: i32) -> anyhow::Result<Vec<FdEntry>> {
+pub fn read_fd(_pid: i32) -> Result<Vec<FdEntry>> {
     Ok(Vec::new())
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn count_fds(_pid: i32) -> anyhow::Result<usize> {
+pub fn count_fds(_pid: i32) -> Result<usize> {
     Ok(0)
 }
 
@@ -125,4 +130,24 @@ fn read_fdinfo_mode(pid: i32, fd: u32) -> String {
         }
     }
     String::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FdEntry;
+
+    #[test]
+    fn fd_entry_clone_and_debug() {
+        let e = FdEntry {
+            fd: 3,
+            fd_type: "file".to_string(),
+            description: "/tmp/test".to_string(),
+        };
+        let cloned = e.clone();
+        assert_eq!(cloned.fd, 3);
+        assert_eq!(cloned.fd_type, "file");
+        assert_eq!(cloned.description, "/tmp/test");
+        let debug = format!("{:?}", e);
+        assert!(debug.contains("FdEntry"));
+    }
 }

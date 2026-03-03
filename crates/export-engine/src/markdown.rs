@@ -177,7 +177,40 @@ pub fn render_markdown(snapshot: &ProcessSnapshot) -> String {
         }
     }
 
+    if let Some(tree) = &info.process_tree {
+        out.push_str("\n## Process Tree\n\n```text\n");
+        append_process_tree_md(&mut out, tree, "", true, info.pid);
+        out.push_str("```\n");
+    }
+
     out
+}
+
+fn append_process_tree_md(
+    out: &mut String,
+    node: &peek_core::ProcessNode,
+    prefix: &str,
+    is_last: bool,
+    target: i32,
+) {
+    let conn = if is_last { "└── " } else { "├── " };
+    let name = if node.pid == target {
+        format!("{} (this)", node.name)
+    } else {
+        node.name.clone()
+    };
+    out.push_str(&format!(
+        "  {}{}{} ({}) [{} MB]\n",
+        prefix,
+        conn,
+        name,
+        node.pid,
+        node.rss_kb / 1024
+    ));
+    let child_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
+    for (i, child) in node.children.iter().enumerate() {
+        append_process_tree_md(out, child, &child_prefix, i == node.children.len() - 1, target);
+    }
 }
 
 fn format_bytes_per_sec_md(b: u64) -> String {
@@ -187,5 +220,52 @@ fn format_bytes_per_sec_md(b: u64) -> String {
         format!("{:.1} KB/s", b as f64 / 1000.0)
     } else {
         format!("{} B/s", b)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_markdown;
+    use crate::snapshot::ProcessSnapshot;
+    use chrono::{TimeZone, Utc};
+    use peek_core::ProcessInfo;
+
+    #[test]
+    fn markdown_includes_basic_sections() {
+        let info = ProcessInfo {
+            pid: 1234,
+            name: "test-proc".to_string(),
+            cmdline: "test-proc --flag".to_string(),
+            exe: Some("/usr/bin/test-proc".to_string()),
+            state: "Running".to_string(),
+            ppid: 1,
+            uid: 0,
+            gid: 0,
+            started_at: None,
+            threads: 1,
+            vm_size_kb: 0,
+            rss_kb: 0,
+            pss_kb: None,
+            swap_kb: None,
+            cpu_percent: None,
+            io_read_bytes: None,
+            io_write_bytes: None,
+            fd_count: None,
+            kernel: None,
+            network: None,
+            open_files: None,
+            env_vars: None,
+            process_tree: None,
+            gpu: None,
+        };
+        let snapshot = ProcessSnapshot {
+            captured_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
+            peek_version: "test-version".to_string(),
+            process: info,
+        };
+
+        let md = render_markdown(&snapshot);
+        assert!(md.contains("## Process"));
+        assert!(md.contains("peek report"));
     }
 }

@@ -23,7 +23,17 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+Or use [just](https://github.com/casey/just): `just check` (format check + clippy + test), `just fmt`, `just lint`, `just test`. Run `just` with no args to list all commands. Optional: `just deny` runs `cargo deny check` (install with `cargo install cargo-deny`).
+
 CI runs these on every push to `main` and on pull requests.
+
+## Developer tooling
+
+- **rustfmt.toml** — Formatting (max width 100, edition 2021).
+- **clippy.toml** — Clippy config (e.g. cognitive complexity threshold).
+- **.editorconfig** — Indentation/line endings for Rust, TOML, YAML, Markdown.
+- **deny.toml** — `cargo deny` for license and advisory checks.
+- **justfile** — Shorthand: `just test`, `just lint`, `just release`, `just man`, etc.
 
 ## Project layout
 
@@ -45,6 +55,7 @@ See [docs/architecture.md](docs/architecture.md) for details.
 
 - Follow `cargo fmt` and `cargo clippy` (we use `-D warnings` in CI).
 - Prefer clear names and short functions. Add doc comments for public APIs.
+
 
 ## License
 

@@ -16,8 +16,9 @@ clap       = { workspace = true }
 owo-colors = { workspace = true }
 serde      = { workspace = true }
 serde_json = { workspace = true }
-peek-core  = { path = "../peek-core" }
-export-engine = { path = "../export-engine" }
+peek-core  = { path = "../peek-core", version = "0.1" }
+export-engine = { path = "../export-engine", version = "0.1" }
+signal-engine = { path = "../signal-engine", version = "0.1" }
 sysinfo    = { workspace = true }
 ratatui    = { workspace = true }
 crossterm  = { workspace = true }
@@ -25,19 +26,23 @@ crossterm  = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = { workspace = true }
 nix   = { workspace = true }
-network-inspector = { path = "../network-inspector" }
+network-inspector = { path = "../network-inspector", version = "0.1" }
 
 [build-dependencies]
 clap          = { workspace = true }
 clap_complete = { workspace = true }
 clap_mangen   = { workspace = true }
 
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+
 # Packaging: cargo-deb (Debian/Ubuntu .deb)
 [package.metadata.deb]
 name = "peek"
 section = "utils"
 priority = "optional"
-maintainer = "Peek Contributors <peek@example.com>"
+maintainer = "Ankit <ankittkmail@gmail.com>"
 depends = []
 copyright = "MIT License. See LICENSE."
 assets = [

@@ -3,6 +3,7 @@
 //! Provides `ProcessInfo`, `CollectOptions`, `collect()`, and `collect_extended()`; delegates to
 //! proc-reader, kernel-explainer, resource-sampler, network-inspector, and signal-engine.
 
+pub mod config;
 pub mod proc;
 pub mod ringbuf;
 
@@ -78,7 +79,8 @@ pub struct NetworkInfo {
     pub connections: Vec<ConnectionEntry>,
     /// Unix socket paths for this process (from /proc/net/unix + fd inodes).
     pub unix_sockets: Option<Vec<UnixSocketEntry>>,
-    /// RX bytes/sec in process network namespace (from /proc/<pid>/net/dev delta). Blocks ~1s when collected.
+    /// RX bytes/sec in process network namespace (from /proc/<pid>/net/dev delta).
+    /// Sampling window is controlled by `PEEK_NET_SAMPLE_MS` (default 1000ms; 0 disables sampling).
     pub traffic_rx_bytes_per_sec: Option<u64>,
     /// TX bytes/sec in process network namespace.
     pub traffic_tx_bytes_per_sec: Option<u64>,
@@ -170,6 +172,17 @@ pub enum PeekError {
 
     #[error("failed to parse /proc for pid {pid}: {msg}")]
     ProcParse { pid: i32, msg: String },
+}
+
+impl From<proc_reader::ProcReaderError> for PeekError {
+    fn from(e: proc_reader::ProcReaderError) -> Self {
+        let pid = e.pid().unwrap_or(-1);
+        match e {
+            proc_reader::ProcReaderError::NotFound(pid) => PeekError::NotFound(pid),
+            proc_reader::ProcReaderError::Io { source, .. } => PeekError::ProcIo { pid, source },
+            proc_reader::ProcReaderError::Parse { msg, .. } => PeekError::ProcParse { pid, msg },
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, PeekError>;

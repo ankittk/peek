@@ -41,14 +41,30 @@ pub fn run_tui(pid: i32, cli: &Cli, interval: Duration) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = event_loop(&mut terminal, &mut app);
+    // Ensure we always restore the terminal even if the TUI panics
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        event_loop(&mut terminal, &mut app)
+    }));
 
-    // Always restore terminal
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    // Best-effort restore of terminal state
+    let restore_result = (|| -> Result<()> {
+        disable_raw_mode()?;
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+        terminal.show_cursor()?;
+        Ok(())
+    })();
 
-    result
+    match result {
+        Ok(loop_result) => {
+            // Prefer any restoration error over the inner result
+            restore_result.and(loop_result)
+        }
+        Err(panic) => {
+            // Ignore restoration errors on panic and resume unwinding
+            let _ = restore_result;
+            std::panic::resume_unwind(panic);
+        }
+    }
 }
 
 fn event_loop(
@@ -107,6 +123,9 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
 
         // Pause / resume
         KeyCode::Char(' ') => app.paused = !app.paused,
+
+        // Help overlay
+        KeyCode::Char('?') => app.show_help = !app.show_help,
 
         _ => {}
     }

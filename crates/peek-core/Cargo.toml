@@ -2,20 +2,27 @@
 name = "peek-core"
 version = "0.1.0"
 edition = "2021"
+description = "Core process intelligence library for the Peek tool on Linux"
+license = "MIT"
+repository = "https://github.com/ankittk/peek"
+homepage = "https://github.com/ankittk/peek"
+documentation = "https://github.com/ankittk/peek"
+keywords = ["process", "linux", "cli", "monitoring", "procfs"]
+categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
 anyhow = { workspace = true }
-bytesize = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
+toml = "0.8"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 sysinfo = { workspace = true }
-proc-reader = { path = "../proc-reader" }
-signal-engine = { path = "../signal-engine" }
-resource-sampler = { path = "../resource-sampler" }
-network-inspector = { path = "../network-inspector" }
-kernel-explainer = { path = "../kernel-explainer" }
+proc-reader = { path = "../proc-reader", version = "0.1" }
+signal-engine = { path = "../signal-engine", version = "0.1" }
+resource-sampler = { path = "../resource-sampler", version = "0.1" }
+network-inspector = { path = "../network-inspector", version = "0.1" }
+kernel-explainer = { path = "../kernel-explainer", version = "0.1" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = { workspace = true }

@@ -231,3 +231,23 @@ fn tcp_state(state: u8) -> &'static str {
         _ => "UNKNOWN",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_addr, tcp_state};
+
+    #[test]
+    fn parses_ipv4_addr_and_port() {
+        // 127.0.0.1:8000 encoded as hex
+        let (addr, port) = parse_addr("0100007F:1F40", false);
+        assert_eq!(addr, "127.0.0.1");
+        assert_eq!(port, 8000);
+    }
+
+    #[test]
+    fn parses_tcp_states() {
+        assert_eq!(tcp_state(0x01), "ESTABLISHED");
+        assert_eq!(tcp_state(0x0A), "LISTEN");
+        assert_eq!(tcp_state(0xFF), "UNKNOWN");
+    }
+}

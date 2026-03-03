@@ -24,3 +24,14 @@ pub fn read_cgroup(pid: i32) -> Option<String> {
 pub fn read_cgroup(_pid: i32) -> Option<String> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn non_linux_stub_returns_none() {
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(super::read_cgroup(1).is_none());
+        }
+    }
+}

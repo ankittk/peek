@@ -67,3 +67,17 @@ pub fn list_unix_sockets(pid: i32) -> Vec<UnixSocketEntry> {
 pub fn list_unix_sockets(_pid: i32) -> Vec<UnixSocketEntry> {
     vec![]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::UnixSocketEntry;
+
+    #[test]
+    fn unix_socket_entry_debug() {
+        let e = UnixSocketEntry {
+            path: "/tmp/test.sock".to_string(),
+        };
+        let debug = format!("{:?}", e);
+        assert!(debug.contains("test.sock"));
+    }
+}

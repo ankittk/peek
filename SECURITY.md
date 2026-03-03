@@ -25,5 +25,5 @@ We will respond as quickly as we can and will credit you in any advisory unless 
 ## Security considerations
 
 - peek and peekd read from `/proc` and system interfaces; they are intended to be run by users with permission to inspect the target processes.
-- peekd can run as root so it can sample any PID; the systemd unit uses root. For same-UID monitoring only, you can run peekd as a normal user or use `DynamicUser`.
-- The daemon listens on a Unix socket (`/run/peekd/peekd.sock`); socket permissions are set so unprivileged users can connect when appropriate for your deployment.
+- peekd can run as root so it can sample any PID; the systemd unit uses root by default. For same-UID monitoring only, you can run peekd as a normal user or use `DynamicUser`.
+- The daemon listens on a Unix socket (`/run/peekd/peekd.sock`); by default the socket is restricted to owner and group (0o660). Use systemd unit settings or filesystem ACLs if you need to relax or further restrict access. There is no additional authentication beyond Unix socket permissions.

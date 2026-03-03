@@ -91,6 +91,9 @@ pub fn collect_process_impl(pid: i32, sample_cpu: bool) -> Result<ProcessInfo> {
     })
 }
 
+/// Cached boot time from /proc/stat. Read once; boot time does not change.
 fn boot_time() -> Option<DateTime<Local>> {
-    procfs::boot_time().ok()
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<Option<DateTime<Local>>> = OnceLock::new();
+    *CACHED.get_or_init(|| procfs::boot_time().ok())
 }

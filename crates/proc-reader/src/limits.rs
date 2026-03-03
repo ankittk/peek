@@ -3,7 +3,8 @@
 // For now we expose just the "Max open files" soft/hard limits, which are
 // enough to drive fd-usage warnings in higher-level crates.
 
-use anyhow::Result;
+use crate::error::{io_to_error, Result};
+use std::path::PathBuf;
 
 /// Subset of `/proc/<pid>/limits` that we care about.
 #[derive(Debug, Clone, Default)]
@@ -17,8 +18,8 @@ pub struct Limits {
 /// Read `/proc/<pid>/limits` and extract the "Max open files" limits.
 #[cfg(target_os = "linux")]
 pub fn read_limits(pid: i32) -> Result<Limits> {
-    let path = format!("/proc/{}/limits", pid);
-    let raw = std::fs::read_to_string(path)?;
+    let path = PathBuf::from(format!("/proc/{}/limits", pid));
+    let raw = std::fs::read_to_string(&path).map_err(|e| io_to_error(path.clone(), e, pid))?;
 
     let mut out = Limits::default();
 
@@ -60,4 +61,34 @@ fn parse_limit_field(field: Option<&str>) -> Option<u64> {
         return None;
     }
     v.parse::<u64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_limit_field;
+    use proptest::prelude::*;
+
+    #[test]
+    fn parses_numeric_limits() {
+        assert_eq!(parse_limit_field(Some("1024")), Some(1024));
+        assert_eq!(parse_limit_field(Some("0")), Some(0));
+    }
+
+    #[test]
+    fn treats_unlimited_as_none() {
+        assert_eq!(parse_limit_field(Some("unlimited")), None);
+    }
+
+    #[test]
+    fn handles_missing_field() {
+        assert_eq!(parse_limit_field(None), None);
+    }
+
+    proptest! {
+        #[test]
+        fn parse_limit_field_never_panics_for_arbitrary_strings(s in ".*") {
+            // Should not panic for any arbitrary input.
+            let _ = parse_limit_field(Some(&s));
+        }
+    }
 }

@@ -27,15 +27,38 @@ case "$ARCH" in
     ;;
 esac
 
-PEEK_URL="https://github.com/${REPO}/releases/download/${TAG}/peek-${VERSION_LABEL}-${ASSET_SUFFIX}"
-PEEKD_URL="https://github.com/${REPO}/releases/download/${TAG}/peekd-${VERSION_LABEL}-${ASSET_SUFFIX}"
+PEEK_FILE="peek-${VERSION_LABEL}-${ASSET_SUFFIX}"
+PEEKD_FILE="peekd-${VERSION_LABEL}-${ASSET_SUFFIX}"
+PEEK_URL="https://github.com/${REPO}/releases/download/${TAG}/${PEEK_FILE}"
+PEEKD_URL="https://github.com/${REPO}/releases/download/${TAG}/${PEEKD_FILE}"
+CHECKSUMS_URL="https://github.com/${REPO}/releases/download/${TAG}/checksums.sha256"
 
 echo "Installing peek ${VERSION} (${ASSET_SUFFIX}) to ${INSTALL_DIR}..."
-mkdir -p "$INSTALL_DIR"
 
-curl -sSLo "${INSTALL_DIR}/peek" "$PEEK_URL"
-curl -sSLo "${INSTALL_DIR}/peekd" "$PEEKD_URL"
-chmod +x "${INSTALL_DIR}/peek" "${INSTALL_DIR}/peekd"
+if ! command -v sha256sum >/dev/null 2>&1; then
+  echo "sha256sum is required for checksum verification. Please install coreutils and try again." >&2
+  exit 1
+fi
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+echo "Downloading checksums..."
+curl -sSL -o "${TMP_DIR}/checksums.sha256" "$CHECKSUMS_URL"
+
+echo "Downloading binaries..."
+curl -sSL -o "${TMP_DIR}/${PEEK_FILE}" "$PEEK_URL"
+curl -sSL -o "${TMP_DIR}/${PEEKD_FILE}" "$PEEKD_URL"
+
+echo "Verifying checksums..."
+(
+  cd "$TMP_DIR"
+  sha256sum -c --ignore-missing checksums.sha256
+)
+
+mkdir -p "$INSTALL_DIR"
+install -m 0755 "${TMP_DIR}/${PEEK_FILE}" "${INSTALL_DIR}/peek"
+install -m 0755 "${TMP_DIR}/${PEEKD_FILE}" "${INSTALL_DIR}/peekd"
 
 echo "peek ${VERSION} and peekd installed to ${INSTALL_DIR}"
 echo "Ensure ${INSTALL_DIR} is on your PATH."

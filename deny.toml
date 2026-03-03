@@ -1,0 +1,49 @@
+# cargo-deny: audit licenses, advisories, and duplicate dependencies.
+# Install: cargo install cargo-deny
+# Run: cargo deny check
+
+[graph]
+all-features = false
+targets = []
+
+[output]
+feature-depth = 1
+
+[advisories]
+ignore = []
+# Uncomment to fail on security advisories (CI)
+# vulnerability = "deny"
+# unmaintained = "warn"
+# yanked = "deny"
+
+[licenses]
+allow = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause"]
+confidence-threshold = 0.8
+exceptions = []
+
+[licenses.private]
+ignore = false
+registries = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+allow-workspace = false
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []

@@ -2,11 +2,17 @@
 name = "signal-engine"
 version = "0.1.0"
 edition = "2021"
+description = "Signal processing and aggregation engine for the Peek process intelligence tool"
+license = "MIT"
+repository = "https://github.com/ankittk/peek"
+homepage = "https://github.com/ankittk/peek"
+documentation = "https://github.com/ankittk/peek"
+keywords = ["process", "linux", "monitoring"]
+categories = ["command-line-utilities", "os::linux-apis"]
 
 [dependencies]
 anyhow = { workspace = true }
 serde = { workspace = true }
-thiserror = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true }

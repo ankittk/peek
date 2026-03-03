@@ -1,16 +1,7 @@
-// Live kernel state: wchan and current syscall. Plan: small helpers returning Option.
+// Live kernel state: current syscall. Plan: small helpers returning Option.
 
 use std::fs;
 use std::path::Path;
-
-/// Reads the kernel wait channel name from `/proc/<pid>/wchan`.
-/// Returns `None` if the file is missing or unreadable (e.g. no permission).
-pub fn read_wchan(pid: i32) -> Option<String> {
-    let path = Path::new("/proc").join(pid.to_string()).join("wchan");
-    fs::read_to_string(&path)
-        .ok()
-        .map(|s| s.trim_end().to_string())
-}
 
 /// Reads the current syscall from `/proc/<pid>/syscall`.
 /// Format: "syscall_num arg1 arg2 arg3 arg4 arg5 arg6" (hex args on some kernels).

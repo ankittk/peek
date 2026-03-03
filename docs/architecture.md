@@ -72,3 +72,4 @@ Layout matches `plan.md` §2 (Repository Structure).
       - `{"action":"alert_list"}` → list rules: `{"ok":true,"data":{"rules":[...]}}`.
       - `{"action":"alert_remove","rule_id":"..."}"` → remove a rule by ID.
       - `{"action":"ping"}` → health check: `{"ok":true,"data":{"pong":true,"version":"..","watching":N}}`.
+

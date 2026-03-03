@@ -27,3 +27,14 @@ pub fn read_label(pid: i32) -> Option<String> {
 pub fn read_label(_pid: i32) -> Option<String> {
     None
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn non_linux_stub_returns_none() {
+        #[cfg(not(target_os = "linux"))]
+        {
+            assert!(super::read_label(1).is_none());
+        }
+    }
+}

@@ -7,16 +7,35 @@ pub type WatchedPids = std::sync::Arc<std::sync::Mutex<Vec<i32>>>;
 pub type AlertEng = std::sync::Arc<std::sync::Mutex<crate::alert::AlertEngine>>;
 
 #[cfg(unix)]
-pub fn run(history: crate::ring_store::History, watched: WatchedPids, alerts: AlertEng) {
+fn sample_interval() -> tokio::time::Duration {
+    use tokio::time::Duration;
+
+    let secs = std::env::var("PEEKD_SAMPLE_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &u64| *n > 0 && *n <= 3600)
+        .unwrap_or(1);
+    Duration::from_secs(secs)
+}
+
+#[cfg(unix)]
+pub fn run(
+    history: crate::ring_store::History,
+    watched: WatchedPids,
+    alerts: AlertEng,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
     use chrono::Local;
     use peek_core::collect;
-    use tokio::time::{interval, Duration};
+    use tokio::time::interval;
 
     tokio::spawn(async move {
-        let mut ticker = interval(Duration::from_secs(1));
+        let mut shutdown = shutdown;
+        let mut ticker = interval(sample_interval());
         loop {
-            ticker.tick().await;
-            let pids: Vec<i32> = watched.lock().unwrap().clone();
+            tokio::select! {
+                _ = ticker.tick() => {
+            let pids: Vec<i32> = lock_arc_unpoison(&watched, "watched PIDs").clone();
             for pid in pids {
                 match collect(pid) {
                     Ok(info) => {
@@ -29,7 +48,7 @@ pub fn run(history: crate::ring_store::History, watched: WatchedPids, alerts: Al
                             fd_count: info.fd_count,
                         };
                         crate::ring_store::push_sample(&history, pid, sample);
-                        let fired = alerts.lock().unwrap().evaluate(&info);
+                        let fired = lock_arc_unpoison(&alerts, "alerts").evaluate(&info);
                         for event in fired {
                             tracing::warn!(
                                 "alert fired: rule={} pid={} {}={:.2} threshold={:.2}",
@@ -43,12 +62,42 @@ pub fn run(history: crate::ring_store::History, watched: WatchedPids, alerts: Al
                     }
                     Err(_) => {
                         tracing::info!("pid {} gone, removing", pid);
-                        watched.lock().unwrap().retain(|&p| p != pid);
+                        lock_arc_unpoison(&watched, "watched PIDs").retain(|&p| p != pid);
                         crate::ring_store::remove_pid(&history, pid);
-                        alerts.lock().unwrap().remove_rules_for_pid(pid);
+                        lock_arc_unpoison(&alerts, "alerts").remove_rules_for_pid(pid);
+                    }
+                }
+            }
+                }
+                changed = shutdown.changed() => {
+                    match changed {
+                        Ok(_) => {
+                            if *shutdown.borrow() {
+                                tracing::info!("shutdown requested, stopping watcher loop");
+                                break;
+                            }
+                        }
+                        Err(_) => {
+                            tracing::info!("shutdown channel closed, stopping watcher loop");
+                            break;
+                        }
                     }
                 }
             }
         }
     });
+}
+
+#[cfg(unix)]
+fn lock_arc_unpoison<'a, T>(
+    arc: &'a std::sync::Arc<std::sync::Mutex<T>>,
+    name: &str,
+) -> std::sync::MutexGuard<'a, T> {
+    match arc.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            tracing::error!("{} mutex poisoned; continuing with inner value", name);
+            e.into_inner()
+        }
+    }
 }

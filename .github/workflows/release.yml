@@ -18,11 +18,11 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Build x86_64 (musl)
-        run: cargo build --target x86_64-unknown-linux-musl --release
+        run: cargo build --target x86_64-unknown-linux-musl --release --locked
       - name: Build aarch64 (musl) with cross
         run: |
           cargo install cross
-          cross build --target aarch64-unknown-linux-musl --release
+          cross build --target aarch64-unknown-linux-musl --release --locked
       - name: Install packaging tools
         run: |
           cargo install cargo-deb
@@ -58,6 +58,16 @@ jobs:
           cp target/x86_64-unknown-linux-musl/release/peekd release/peekd-${VERSION_LABEL}-x86_64-linux-musl
           cp target/aarch64-unknown-linux-musl/release/peek  release/peek-${VERSION_LABEL}-aarch64-linux-musl
           cp target/aarch64-unknown-linux-musl/release/peekd release/peekd-${VERSION_LABEL}-aarch64-linux-musl
+          (cd release && sha256sum * > sha256sums.txt)
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign release assets with cosign (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          for asset in release/*; do
+            cosign sign-blob --yes --output-signature "${asset}.sig" "${asset}"
+          done
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

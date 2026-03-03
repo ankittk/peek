@@ -1,7 +1,7 @@
-use crate::OpenFile;
+use crate::{OpenFile, Result};
 use proc_reader::fd::{count_fds as reader_count_fds, read_fd, FdEntry};
 
-pub fn collect_files(pid: i32) -> anyhow::Result<Vec<OpenFile>> {
+pub fn collect_files(pid: i32) -> Result<Vec<OpenFile>> {
     let entries: Vec<FdEntry> = read_fd(pid)?;
     let mut files = Vec::with_capacity(entries.len());
 
@@ -16,6 +16,6 @@ pub fn collect_files(pid: i32) -> anyhow::Result<Vec<OpenFile>> {
     Ok(files)
 }
 
-pub fn count_fds(pid: i32) -> anyhow::Result<usize> {
-    reader_count_fds(pid)
+pub fn count_fds(pid: i32) -> Result<usize> {
+    Ok(reader_count_fds(pid)?)
 }

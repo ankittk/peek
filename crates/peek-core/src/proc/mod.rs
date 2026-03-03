@@ -13,8 +13,6 @@ pub mod network;
 #[cfg(target_os = "linux")]
 pub mod resources;
 #[cfg(target_os = "linux")]
-pub mod signal;
-#[cfg(target_os = "linux")]
 pub mod tree;
 
 use crate::{ProcessInfo, Result};

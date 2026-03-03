@@ -12,7 +12,16 @@ pub struct Sample {
 }
 
 #[cfg(unix)]
-pub const RING_SIZE: usize = 300; // 5 min at 1 s
+const DEFAULT_RING_SIZE: usize = 300; // 5 min at 1 s
+
+#[cfg(unix)]
+fn ring_size() -> usize {
+    std::env::var("PEEKD_RING_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &usize| *n > 0 && *n <= 3600)
+        .unwrap_or(DEFAULT_RING_SIZE)
+}
 
 #[cfg(unix)]
 pub type History = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<i32, Vec<Sample>>>>;
@@ -23,11 +32,24 @@ pub fn new_history() -> History {
 }
 
 #[cfg(unix)]
+fn lock_history(
+    history: &History,
+) -> std::sync::MutexGuard<'_, std::collections::HashMap<i32, Vec<Sample>>> {
+    match history.lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            tracing::error!("history mutex poisoned; continuing with inner value");
+            e.into_inner()
+        }
+    }
+}
+
+#[cfg(unix)]
 pub fn push_sample(history: &History, pid: i32, sample: Sample) {
-    let mut h = history.lock().unwrap();
+    let mut h = lock_history(history);
     let ring = h.entry(pid).or_default();
     ring.push(sample);
-    if ring.len() > RING_SIZE {
+    if ring.len() > ring_size() {
         ring.remove(0);
     }
 
@@ -39,7 +61,7 @@ pub fn push_sample(history: &History, pid: i32, sample: Sample) {
 
 #[cfg(unix)]
 pub fn remove_pid(history: &History, pid: i32) {
-    history.lock().unwrap().remove(&pid);
+    lock_history(history).remove(&pid);
 }
 
 // ─── On-disk persistence ──────────────────────────────────────────────────────
@@ -88,7 +110,7 @@ pub fn load_from_disk(history: &History, pid: i32) {
         Ok(r) => r,
         Err(_) => return,
     };
-    let mut h = history.lock().unwrap();
+    let mut h = lock_history(history);
     let ring = h.entry(pid).or_default();
     ring.clear();
     for line in raw.lines() {
@@ -97,7 +119,7 @@ pub fn load_from_disk(history: &History, pid: i32) {
         }
         if let Ok(sample) = serde_json::from_str::<Sample>(line) {
             ring.push(sample);
-            if ring.len() > RING_SIZE {
+            if ring.len() > ring_size() {
                 ring.remove(0);
             }
         }
